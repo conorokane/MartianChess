@@ -2,32 +2,37 @@
 -- by Conor O'Kane
 
 include("src/cpu_player.lua")
+include("src/effects.lua")
 
 local board_columns = 4
 local board_rows = 8
 local zone_rows = 4
-local border_size = 8
+local border_size = 4
 local side_panel_width = 102
+local panel_offset_x = 2
 local canal_height = 4
 local canal_color = 1
-local tile_width = 18
-local tile_height = 18
-local piece_width = 16
-local piece_height = 16
+local tile_width = 20
+local tile_height = 20
+local piece_width = 18
+local piece_height = 18
 local piece_offset_x = (tile_width - piece_width) / 2
 local piece_offset_y = (tile_height - piece_height) / 2
 local move_duration_frames = 20
 local cpu_move_delay_frames = 60
-local deadlock_start_after_move = 20
+local deadlock_start_after_move = 40
 local deadlock_move_limit = 7
 local deadlock_warning_start = 3
-local captured_pieces_per_row = 5
-local captured_piece_spacing = 18
-local score_panel_height = 50
+local capture_group_spacing = 30
+local capture_count_offset_x = piece_width + 2
+local capture_count_offset_y = 5
+local score_panel_height = 34
 local score_panel_padding = 4
+local score_text_offset_x = 2
 local score_panel_radius = 4
-local score_panel_fill_color = 1
-local score_panel_border_color = 16
+local score_panel_fill_color = 2
+local score_panel_border_color = 25
+local turn_highlight_color = 10
 
 local pawn = 1
 local drone = 2
@@ -71,14 +76,15 @@ local cpu_move_delay_elapsed = 0
 
 local cpu = "cpu"
 local player = "player"
+local next_starting_player = player
 
 local game = {
 	board = {},
 	turn = player,
-	north_score = 0,
-	south_score = 0,
-	north_captures = {},
-	south_captures = {},
+	cpu_score = 0,
+	player_score = 0,
+	cpu_captures = {},
+	player_captures = {},
 	move_count = 0,
 	non_capture_move_count = 0,
 	over = false,
@@ -95,11 +101,12 @@ end
 
 local function initialize_board()
 	game.board = {}
-	game.turn = player
-	game.north_score = 0
-	game.south_score = 0
-	game.north_captures = {}
-	game.south_captures = {}
+	game.turn = next_starting_player
+	next_starting_player = next_starting_player == player and cpu or player
+	game.cpu_score = 0
+	game.player_score = 0
+	game.cpu_captures = {}
+	game.player_captures = {}
 	game.move_count = 0
 	game.non_capture_move_count = 0
 	game.over = false
@@ -152,11 +159,25 @@ local function initialize_layout()
 	bottom_board_y = canal_y + canal_height
 	window_width = border_size + board_width + border_size + side_panel_width
 	window_height = border_size + board_rows * tile_height + canal_height + border_size
-	game_over_panel_width = board_width
-	game_over_panel_height = zone_rows * tile_height
-	game_over_panel_x = board_x
+	game_over_panel_x = board_x + board_width + border_size / 2 +
+		panel_offset_x
+	game_over_panel_width = window_width - game_over_panel_x - border_size
+	game_over_panel_height = zone_rows * tile_height / 2
+	local north_panel_bottom = board_origin_y + score_panel_height
+	local board_bottom_y = bottom_board_y + zone_rows * tile_height
+	local south_panel_y = board_bottom_y - score_panel_height
+	game_over_panel_y = north_panel_bottom +
+		(south_panel_y - north_panel_bottom - game_over_panel_height) / 2
 	restart_button_x = game_over_panel_x +
 		(game_over_panel_width - restart_button_width) / 2
+	restart_button_y = game_over_panel_y + game_over_panel_height -
+		restart_button_height - 4
+	effects.initialize_canal_sparkles(
+		board_x,
+		canal_y,
+		board_width,
+		canal_height
+	)
 end
 
 local function screen_y_for_row(row)
@@ -300,7 +321,7 @@ local function deselect_piece()
 end
 
 local function valid_move_at(column, row)
-	for _, move in ipairs(valid_moves) do
+	for move in all(valid_moves) do
 		if move.column == column and move.row == row then
 			return move
 		end
@@ -330,12 +351,9 @@ local function check_game_over(moving_player)
 
 	game.over = true
 	game.empty_player = north_empty and cpu or player
-	game_over_panel_y = game.empty_player == cpu and
-		board_origin_y or bottom_board_y
-	restart_button_y = game_over_panel_y + 47
-	if game.north_score > game.south_score then
+	if game.cpu_score > game.player_score then
 		game.winner = cpu
-	elseif game.south_score > game.north_score then
+	elseif game.player_score > game.cpu_score then
 		game.winner = player
 	else
 		game.winner = moving_player
@@ -346,12 +364,9 @@ end
 local function end_deadlock()
 	game.over = true
 	game.empty_player = nil
-	game_over_panel_y = board_origin_y +
-		(board_rows * tile_height + canal_height - game_over_panel_height) / 2
-	restart_button_y = game_over_panel_y + 47
-	if game.north_score > game.south_score then
+	if game.cpu_score > game.player_score then
 		game.winner = cpu
-	elseif game.south_score > game.north_score then
+	elseif game.player_score > game.cpu_score then
 		game.winner = player
 	else
 		game.winner = nil
@@ -367,19 +382,13 @@ local function finish_move()
 	local from_row = move_animation.from_row
 	if was_capture then
 		if game.turn == player then
-			game.south_score += target.type
-			game.south_captures[#game.south_captures + 1] = target.type
+			game.player_score += target.type
+			game.player_captures[#game.player_captures + 1] = target.type
 		else
-			game.north_score += target.type
-			game.north_captures[#game.north_captures + 1] = target.type
+			game.cpu_score += target.type
+			game.cpu_captures[#game.cpu_captures + 1] = target.type
 		end
 	end
-	if was_capture then
-		sfx(target.type + 3)
-	else
-		sfx(2)
-	end
-
 	game.board[from_row + 1][from_column + 1] = nil
 	if move.promotion then
 		piece.type = move.promotion
@@ -412,6 +421,19 @@ local function finish_move()
 		end
 	else
 		game.non_capture_move_count = 0
+	end
+
+	if move.promotion == drone then
+		sfx(13)
+	elseif move.promotion == queen then
+		sfx(14)
+	elseif was_capture then
+		sfx(target.type + 3)
+	elseif game.non_capture_move_count >= deadlock_warning_start and
+		game.non_capture_move_count <= 7 then
+		sfx(game.non_capture_move_count + 5)
+	else
+		sfx(2)
 	end
 
 	local moving_player = game.turn
@@ -495,11 +517,29 @@ end
 
 local function collect_cpu_moves()
 	local cpu_moves = {}
+	local cpu_piece_count = 0
 	for row = 0, zone_rows - 1 do
 		for column = 0, board_columns - 1 do
 			if game.board[row + 1][column + 1] then
+				cpu_piece_count += 1
+			end
+		end
+	end
+	for row = 0, zone_rows - 1 do
+		for column = 0, board_columns - 1 do
+			local piece = game.board[row + 1][column + 1]
+			if piece then
+				local source_piece_is_exposed =
+					cpu_player.opponent_can_capture_piece(
+						game.board,
+						game.turn,
+						column,
+						row
+					)
 				calculate_valid_moves(column, row)
-				for _, move in ipairs(valid_moves) do
+				for move in all(valid_moves) do
+					local crosses_canal = owner_for_row(row) !=
+						owner_for_row(move.row)
 					local capture_value = cpu_player.evaluate_capture_value(
 						game.board,
 						game.turn,
@@ -514,6 +554,11 @@ local function collect_cpu_moves()
 						row = move.row,
 						promotion = move.promotion,
 						capture_value = capture_value,
+						source_piece_value = piece.type,
+						source_piece_is_exposed = source_piece_is_exposed,
+						crosses_canal = crosses_canal,
+						moves_last_piece_over_canal =
+							cpu_piece_count == 1 and crosses_canal,
 						moved_piece_is_exposed = capture_value == nil and
 							cpu_player.opponent_can_capture_moved_piece(
 								game.board,
@@ -534,8 +579,8 @@ end
 local function start_cpu_move()
 	local move = cpu_player.choose_move(
 		collect_cpu_moves(),
-		game.north_score,
-		game.south_score
+		game.cpu_score,
+		game.player_score
 	)
 	if not move then
 		return
@@ -547,7 +592,7 @@ local function start_cpu_move()
 end
 
 local function draw_board()
-	-- Map 0 stores one 4x4 board half. Draw it on the 18-pixel grid
+	-- Map 0 stores one 4x4 board half. Draw it on the 20-pixel grid
 	-- above and below the canal.
 	for row = 0, zone_rows - 1 do
 		for column = 0, board_columns - 1 do
@@ -564,17 +609,6 @@ local function draw_board()
 		board_x + board_width - 1,
 		canal_y + canal_height - 1,
 		canal_color
-	)
-end
-
-local function draw_turn_border()
-	local y = game.turn == cpu and board_origin_y or bottom_board_y
-	rect(
-		board_x - 1,
-		y - 1,
-		board_x + board_width,
-		y + zone_rows * tile_height,
-		9
 	)
 end
 
@@ -646,7 +680,7 @@ local function draw_move_animation()
 end
 
 local function draw_valid_moves()
-	for _, move in ipairs(valid_moves) do
+	for move in all(valid_moves) do
 		local map_row = move.row % zone_rows
 		local tile = board_tiles:get(move.column, map_row)
 		local sprite = tile == dark_board_tile and
@@ -660,26 +694,35 @@ local function draw_valid_moves()
 end
 
 local function draw_capture_list(captures, x, y)
-	for index, piece_type in ipairs(captures) do
-		local position = index - 1
-		local column = position % captured_pieces_per_row
-		local row = flr(position / captured_pieces_per_row)
+	local capture_counts = {0, 0, 0}
+	for piece_type in all(captures) do
+		capture_counts[piece_type] += 1
+	end
+	for piece_type = pawn, queen do
+		local group_x = x + (piece_type - 1) * capture_group_spacing
 		spr(
 			piece_type,
-			x + column * captured_piece_spacing,
-			y + row * captured_piece_spacing
+			group_x,
+			y
+		)
+		print(
+			capture_counts[piece_type],
+			group_x + capture_count_offset_x,
+			y + capture_count_offset_y,
+			7
 		)
 	end
 end
 
 local function draw_captured_pieces()
-	local panel_x = board_x + board_width + border_size / 2
+	local panel_x = board_x + board_width + border_size / 2 +
+		panel_offset_x
 	local panel_width = window_width - panel_x - border_size
 	local north_panel_y = board_origin_y
 	local board_bottom_y = bottom_board_y + zone_rows * tile_height
 	local south_panel_y = board_bottom_y - score_panel_height
 
-	local function draw_score_panel(y)
+	local function draw_score_panel(y, owner)
 		rrectfill(
 			panel_x,
 			y,
@@ -694,25 +737,50 @@ local function draw_captured_pieces()
 			panel_width,
 			score_panel_height,
 			score_panel_radius,
-			score_panel_border_color
+			game.turn == owner and turn_highlight_color or
+				score_panel_border_color
 		)
 	end
 
-	draw_score_panel(north_panel_y)
-	draw_score_panel(south_panel_y)
+	draw_score_panel(north_panel_y, cpu)
+	draw_score_panel(south_panel_y, player)
+	if not game.over then
+		local turn_text = game.turn == cpu and "CPU's turn" or
+			"Player's turn"
+		local turn_text_width = print(turn_text, 0, -1000)
+		local turn_text_y = game.turn == cpu and
+			north_panel_y + score_panel_height + 2 or
+			south_panel_y - 9
+		print(
+			turn_text,
+			panel_x + (panel_width - turn_text_width) / 2,
+			turn_text_y,
+			7
+		)
+	end
 
 	local content_x = panel_x + score_panel_padding
 	local north_label_y = north_panel_y + score_panel_padding
 	local south_label_y = south_panel_y + score_panel_padding
-	print("North: "..game.north_score, content_x, north_label_y, 7)
+	print(
+		"CPU score: "..game.cpu_score,
+		content_x + score_text_offset_x,
+		north_label_y,
+		7
+	)
 	draw_capture_list(
-		game.north_captures,
+		game.cpu_captures,
 		content_x,
 		north_label_y + 8
 	)
-	print("South: "..game.south_score, content_x, south_label_y, 7)
+	print(
+		"Player score: "..game.player_score,
+		content_x + score_text_offset_x,
+		south_label_y,
+		7
+	)
 	draw_capture_list(
-		game.south_captures,
+		game.player_captures,
 		content_x,
 		south_label_y + 8
 	)
@@ -728,15 +796,21 @@ local function draw_deadlock_countdown()
 		deadlock_move_limit - game.non_capture_move_count
 	local x = board_x + board_width + border_size
 	print(
-		"Game ends in "..moves_remaining.." moves",
+		"Game ends in "..moves_remaining,
 		x,
-		canal_y - 15,
+		canal_y - 11,
 		7
 	)
 	print(
-		"without capture",
+		moves_remaining == 1 and "move without" or "moves without",
 		x,
-		canal_y - 7,
+		canal_y - 3,
+		7
+	)
+	print(
+		"a capture",
+		x,
+		canal_y + 5,
 		7
 	)
 end
@@ -771,14 +845,14 @@ local function draw_game_over_panel()
 	)
 	local winner_text = "Draw"
 	if game.winner then
-		local winner_name = game.winner == cpu and "North" or "South"
-		winner_text = "Winner "..winner_name
+		local winner_name = game.winner == cpu and "CPU" or "Player"
+		winner_text = winner_name.. " wins!"
 	end
 	local winner_text_width = print(winner_text, 0, -1000)
 	print(
 		winner_text,
 		game_over_panel_x + (game_over_panel_width - winner_text_width) / 2,
-		game_over_panel_y + 18,
+		game_over_panel_y + 5,
 		7
 	)
 	rrectfill(
@@ -787,7 +861,7 @@ local function draw_game_over_panel()
 		restart_button_width,
 		restart_button_height,
 		4,
-		restart_hovered and 9 or 5
+		restart_hovered and 25 or 5
 	)
 	rrect(
 		restart_button_x,
@@ -801,10 +875,21 @@ local function draw_game_over_panel()
 	local restart_text_width = print(restart_text, 0, -1000)
 	print(
 		restart_text,
-		restart_button_x + (restart_button_width - restart_text_width) / 2,
+		restart_button_x + (restart_button_width - restart_text_width) / 2 + 1,
 		restart_button_y + 3,
 		7
 	)
+end
+
+local function hovered_tile_is_visible()
+	if move_animation or hover_column == nil or hover_row == nil then
+		return false
+	end
+	if selected_column != nil then
+		return game.turn == player and
+			valid_move_at(hover_column, hover_row) != nil
+	end
+	return hover_row >= zone_rows
 end
 
 local function update_hovered_tile()
@@ -828,7 +913,7 @@ local function update_hovered_tile()
 		hover_column = nil
 	end
 
-	if hover_column != nil and
+	if hovered_tile_is_visible() and
 		(hover_column != previous_hover_column or
 			hover_row != previous_hover_row) then
 		sfx(0)
@@ -836,7 +921,7 @@ local function update_hovered_tile()
 end
 
 local function draw_hovered_tile()
-	if move_animation or hover_column == nil or hover_row == nil then
+	if not hovered_tile_is_visible() then
 		return
 	end
 
@@ -861,6 +946,7 @@ end
 function _update()
 	local mouse_x, mouse_y, mouse_buttons = mouse()
 	local left_click = type(mouse_buttons) == "number" and mouse_buttons % 2 == 1
+	effects.update_canal_sparkles()
 	if move_animation then
 		update_move_animation()
 		previous_left_click = left_click
@@ -869,6 +955,7 @@ function _update()
 	if game.over then
 		restart_hovered = is_over_restart_button(mouse_x, mouse_y)
 		if restart_hovered and left_click and not previous_left_click then
+			sfx(0)
 			initialize_board()
 		end
 		previous_left_click = left_click
@@ -897,7 +984,7 @@ end
 function _draw()
 	cls(21)
 	draw_board()
-	draw_turn_border()
+	effects.draw_canal_sparkles()
 	draw_previous_move_background()
 	draw_selected_piece_background()
 	draw_valid_moves()

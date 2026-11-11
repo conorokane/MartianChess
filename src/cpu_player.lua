@@ -258,6 +258,35 @@ function cpu_player.opponent_can_capture_moved_piece(
 	return false
 end
 
+function cpu_player.opponent_can_capture_piece(
+	board,
+	turn,
+	column,
+	row
+)
+	local opponent = turn == cpu and player or cpu
+	local first_row = opponent == cpu and 0 or zone_rows
+	local last_row = first_row + zone_rows - 1
+	for opponent_row = first_row, last_row do
+		for opponent_column = 0, board_columns - 1 do
+			local piece = board[opponent_row + 1][opponent_column + 1]
+			if piece and piece_can_capture_after_move(
+				board,
+				piece,
+				opponent_column,
+				opponent_row,
+				column,
+				row,
+				-1,
+				-1
+			) then
+				return true
+			end
+		end
+	end
+	return false
+end
+
 local function choose_random_move(moves)
 	local index = flr(rnd(#moves)) + 1
 	return moves[index]
@@ -273,25 +302,61 @@ function cpu_player.choose_move(valid_moves, cpu_score, opponent_score)
 	local best_captures = {}
 	local non_captures = {}
 	local safe_non_captures = {}
-	for _, move in ipairs(valid_moves) do
-		if move.capture_value == nil then
-			non_captures[#non_captures + 1] = move
-			if not move.moved_piece_is_exposed then
-				safe_non_captures[#safe_non_captures + 1] = move
-			end
-		elseif move.capture_value >= minimum_capture_value then
-			if highest_capture_value == nil or
-				move.capture_value > highest_capture_value then
-				highest_capture_value = move.capture_value
-				best_captures = {move}
-			elseif move.capture_value == highest_capture_value then
-				best_captures[#best_captures + 1] = move
+	local any_capture_available = false
+	for move in all(valid_moves) do
+		-- Emptying the CPU zone ends the game; a tied final score is won by
+		-- the player who made the final move.
+		local move_is_winning_capture = move.capture_value != nil and
+			cpu_score + move.capture_value >= opponent_score
+		local move_is_forbidden = opponent_score > cpu_score and
+			move.moves_last_piece_over_canal and
+			not move_is_winning_capture
+		if not move_is_forbidden then
+			if move.capture_value == nil then
+				non_captures[#non_captures + 1] = move
+				if not move.moved_piece_is_exposed then
+					safe_non_captures[#safe_non_captures + 1] = move
+				end
+			else
+				any_capture_available = true
+				if move.capture_value >= minimum_capture_value then
+					if highest_capture_value == nil or
+						move.capture_value > highest_capture_value then
+						highest_capture_value = move.capture_value
+						best_captures = {move}
+					elseif move.capture_value == highest_capture_value then
+						best_captures[#best_captures + 1] = move
+					end
+				end
 			end
 		end
 	end
 
 	if #best_captures > 0 then
 		return choose_random_move(best_captures)
+	end
+	-- With no capture on the board, save the highest-value threatened
+	-- piece that has a safe escape, preferring to cross the canal.
+	if not any_capture_available then
+		for piece_value = queen, pawn, -1 do
+			local canal_escapes = {}
+			local escapes = {}
+			for move in all(safe_non_captures) do
+				if move.source_piece_is_exposed and
+					move.source_piece_value == piece_value then
+					escapes[#escapes + 1] = move
+					if move.crosses_canal then
+						canal_escapes[#canal_escapes + 1] = move
+					end
+				end
+			end
+			if #canal_escapes > 0 then
+				return choose_random_move(canal_escapes)
+			end
+			if #escapes > 0 then
+				return choose_random_move(escapes)
+			end
+		end
 	end
 	if #safe_non_captures > 0 then
 		return choose_random_move(safe_non_captures)
