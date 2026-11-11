@@ -1,0 +1,12 @@
+# Project documentation and references
+*.md
+*.pdf
+
+# OS metadata
+.DS_Store
+Thumbs.db
+
+# Editor temporary files
+*.swp
+*.swo
+*~
