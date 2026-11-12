@@ -3,6 +3,7 @@
 
 include("src/cpu_player.lua")
 include("src/effects.lua")
+include("src/move_log.lua")
 
 local board_columns = 4
 local board_rows = 8
@@ -147,6 +148,7 @@ local function initialize_board()
 	place_piece(1, 7, drone, player)
 	place_piece(2, 7, queen, player)
 	place_piece(3, 7, queen, player)
+	move_log.reset(game.turn)
 end
 
 local function initialize_layout()
@@ -376,6 +378,7 @@ end
 local function finish_move()
 	local move = move_animation.move
 	local piece = move_animation.piece
+	local moved_piece_type = piece.type
 	local target = game.board[move.row + 1][move.column + 1]
 	local was_capture = target and not move.promotion
 	local from_column = move_animation.from_column
@@ -402,7 +405,9 @@ local function finish_move()
 		row = move.row
 	}
 
-	if owner_for_row(from_row) != owner_for_row(move.row) then
+	local crossed_canal = owner_for_row(from_row) !=
+		owner_for_row(move.row)
+	if crossed_canal then
 		return_restriction = {
 			piece = piece,
 			column = from_column,
@@ -438,15 +443,34 @@ local function finish_move()
 
 	local moving_player = game.turn
 	move_animation = nil
-	local game_ended = check_game_over(moving_player)
+	local ended_by_empty_zone = check_game_over(moving_player)
+	local ended_by_deadlock = false
+	local game_ended = ended_by_empty_zone
 	if not game_ended and
 		game.non_capture_move_count >= deadlock_move_limit then
 		end_deadlock()
+		ended_by_deadlock = true
 		game_ended = true
 	end
 	if not game_ended then
 		game.turn = game.turn == player and cpu or player
 	end
+
+	move_log.record(
+		game.move_count,
+		moved_piece_type,
+		from_column,
+		from_row,
+		move.column,
+		move.row,
+		{
+			capture = was_capture,
+			promotion = move.promotion,
+			canal_ending = ended_by_empty_zone and crossed_canal,
+			deadlock_ending = ended_by_deadlock,
+			winner = game_ended and (game.winner or "draw") or nil
+		}
+	)
 end
 
 local function begin_move(move)
@@ -577,8 +601,10 @@ local function collect_cpu_moves()
 end
 
 local function start_cpu_move()
+	local cpu_moves = collect_cpu_moves()
 	local move = cpu_player.choose_move(
-		collect_cpu_moves(),
+		game.board,
+		cpu_moves,
 		game.cpu_score,
 		game.player_score
 	)

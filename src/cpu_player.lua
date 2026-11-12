@@ -13,6 +13,13 @@ local queen = 3
 local cpu = "cpu"
 local player = "player"
 
+local function choose_random_move(moves)
+	if #moves == 0 then
+		return nil
+	end
+	return moves[flr(rnd(#moves)) + 1]
+end
+
 local function is_on_board(column, row)
 	return column >= 0 and column < board_columns and
 		row >= 0 and row < board_rows
@@ -45,12 +52,12 @@ local function zone_will_be_empty_after_move(
 	return true
 end
 
-local function highest_reply_capture_value(
+local function highest_capture_value_for_piece(
 	board,
 	piece_type,
 	from_column,
 	from_row,
-	gifted_owner,
+	owner,
 	empty_column,
 	empty_row
 )
@@ -64,14 +71,14 @@ local function highest_reply_capture_value(
 				break
 			end
 
-			-- Evaluate the reply on the board as it will look after the
-			-- capture: the capturing piece's original square is empty.
+			-- An empty square can be supplied when evaluating the board
+			-- after a hypothetical move.
 			local target = nil
 			if column != empty_column or row != empty_row then
 				target = board[row + 1][column + 1]
 			end
 			if target then
-				if owner_for_row(row) != gifted_owner and
+				if owner_for_row(row) != owner and
 					target.type > highest_value then
 					highest_value = target.type
 				end
@@ -103,6 +110,204 @@ local function highest_reply_capture_value(
 	return highest_value
 end
 
+function cpu_player.change_is_favorable(
+	change,
+	cpu_score,
+	player_score
+)
+	local projected_score_difference =
+		cpu_score - player_score + change
+	return projected_score_difference > 0
+end
+
+local function board_after_move(board, move)
+	local next_board = {}
+	for row = 1, board_rows do
+		next_board[row] = {}
+		for column = 1, board_columns do
+			local piece = board[row][column]
+			if piece then
+				next_board[row][column] = {
+					type = piece.type,
+					owner = piece.owner
+				}
+			end
+		end
+	end
+
+	local piece = next_board[move.from_row + 1][move.from_column + 1]
+	next_board[move.from_row + 1][move.from_column + 1] = nil
+	if move.promotion then
+		piece.type = move.promotion
+	end
+	piece.owner = owner_for_row(move.row)
+	next_board[move.row + 1][move.column + 1] = piece
+	return next_board
+end
+
+local function evaluate_resulting_move(
+	board,
+	move,
+	cpu_score,
+	player_score
+)
+	local target = board[move.row + 1][move.column + 1]
+	local score_change = 0
+	if target and not move.promotion then
+		score_change = target.type
+	end
+
+	local next_board = board_after_move(board, move)
+	local board_state_value = cpu_player.evaluate_board_state(
+		next_board,
+		player
+	)
+	score_change += board_state_value
+	local is_favorable = cpu_player.change_is_favorable(
+		score_change,
+		cpu_score,
+		player_score
+	)
+	return board_state_value, is_favorable, score_change
+end
+
+function cpu_player.choose_move(
+	board,
+	valid_moves,
+	cpu_score,
+	player_score
+)
+	-- Cache every resulting position for the selection stages below.
+	for move in all(valid_moves) do
+		local board_state_value, is_favorable, score_change =
+			evaluate_resulting_move(
+				board,
+				move,
+				cpu_score,
+				player_score
+			)
+		move.evaluated_board_state = board_state_value
+		move.evaluated_is_favorable = is_favorable
+		move.evaluated_score_change = score_change
+	end
+
+	-- Emptying the CPU zone ends the game. A tied final score is won by
+	-- the player who made the final move.
+	local winning_exits = {}
+	local winning_exit_score = nil
+	for move in all(valid_moves) do
+		if move.moves_last_piece_over_canal then
+			local score_after_move = cpu_score
+			local target = board[move.row + 1][move.column + 1]
+			if target and not move.promotion then
+				score_after_move += target.type
+			end
+			if score_after_move >= player_score and (
+				#winning_exits == 0 or
+				score_after_move > winning_exit_score
+			) then
+				winning_exits = {move}
+				winning_exit_score = score_after_move
+			elseif score_after_move >= player_score and
+				score_after_move == winning_exit_score then
+				winning_exits[#winning_exits + 1] = move
+			end
+		end
+	end
+	if #winning_exits > 0 then
+		return choose_random_move(winning_exits)
+	end
+
+	-- Prefer the highest-valued capture whose resulting position is favorable.
+	local best_captures = {}
+	local best_capture_value = nil
+	local best_capture_board_state = nil
+	for move in all(valid_moves) do
+		if move.capture_value != nil then
+			if move.evaluated_is_favorable and (
+				#best_captures == 0 or
+				move.capture_value > best_capture_value or
+				(move.capture_value == best_capture_value and
+					move.evaluated_board_state > best_capture_board_state)
+			) then
+				best_captures = {move}
+				best_capture_value = move.capture_value
+				best_capture_board_state = move.evaluated_board_state
+			elseif move.evaluated_is_favorable and
+				move.capture_value == best_capture_value and
+				move.evaluated_board_state == best_capture_board_state then
+				best_captures[#best_captures + 1] = move
+			end
+		end
+	end
+	if #best_captures > 0 then
+		return choose_random_move(best_captures)
+	end
+
+	-- Save the most valuable threatened piece that has a favorable escape.
+	local threatened_pieces_available = false
+	for move in all(valid_moves) do
+		if move.source_piece_is_exposed then
+			threatened_pieces_available = true
+			break
+		end
+	end
+	if threatened_pieces_available then
+		for piece_value = queen, pawn, -1 do
+			local best_evasions = {}
+			local best_evasion_board_state = nil
+			for move in all(valid_moves) do
+				if move.capture_value == nil and
+					move.source_piece_is_exposed and
+					move.source_piece_value == piece_value and
+					not move.moved_piece_is_exposed then
+					if move.evaluated_is_favorable and (
+						#best_evasions == 0 or
+						move.evaluated_board_state >
+							best_evasion_board_state
+					) then
+						best_evasions = {move}
+						best_evasion_board_state =
+							move.evaluated_board_state
+					elseif move.evaluated_is_favorable and
+						move.evaluated_board_state ==
+							best_evasion_board_state then
+						best_evasions[#best_evasions + 1] = move
+					end
+				end
+			end
+			if #best_evasions > 0 then
+				return choose_random_move(best_evasions)
+			end
+		end
+	end
+
+	-- If no prioritized move is favorable, make the most favorable legal move.
+	local best_moves = {}
+	local best_score_change = nil
+	local best_moves_are_negative_captures = false
+	for move in all(valid_moves) do
+		local move_is_negative_capture = move.capture_value != nil and
+			move.capture_value < 0
+		if #best_moves == 0 or
+			move.evaluated_score_change > best_score_change then
+			best_moves = {move}
+			best_score_change = move.evaluated_score_change
+			best_moves_are_negative_captures = move_is_negative_capture
+		elseif move.evaluated_score_change == best_score_change and
+			best_moves_are_negative_captures and
+			not move_is_negative_capture then
+			best_moves = {move}
+			best_moves_are_negative_captures = false
+		elseif move.evaluated_score_change == best_score_change and
+			move_is_negative_capture ==
+				best_moves_are_negative_captures then
+			best_moves[#best_moves + 1] = move
+		end
+	end
+	return choose_random_move(best_moves)
+end
+
 function cpu_player.evaluate_capture_value(
 	board,
 	turn,
@@ -132,7 +337,7 @@ function cpu_player.evaluate_capture_value(
 	end
 
 	local gifted_owner = owner_for_row(move.row)
-	local reply_value = highest_reply_capture_value(
+	local reply_value = highest_capture_value_for_piece(
 		board,
 		piece.type,
 		move.column,
@@ -222,6 +427,67 @@ local function piece_can_capture_after_move(
 	)
 end
 
+local function highest_evaluated_capture_value(board, owner)
+	local highest_value = nil
+	local first_row = owner == cpu and 0 or zone_rows
+	local last_row = first_row + zone_rows - 1
+	local target_first_row = owner == cpu and zone_rows or 0
+	local target_last_row = target_first_row + zone_rows - 1
+	for row = first_row, last_row do
+		for column = 0, board_columns - 1 do
+			local piece = board[row + 1][column + 1]
+			if piece then
+				for target_row = target_first_row, target_last_row do
+					for target_column = 0, board_columns - 1 do
+						local target =
+							board[target_row + 1][target_column + 1]
+						if target and piece_can_capture_after_move(
+							board,
+							piece,
+							column,
+							row,
+							target_column,
+							target_row,
+							-1,
+							-1
+						) then
+							local capture_value =
+								cpu_player.evaluate_capture_value(
+									board,
+									owner,
+									column,
+									row,
+									{
+										column = target_column,
+										row = target_row
+									}
+								)
+							if highest_value == nil or
+								capture_value > highest_value then
+								highest_value = capture_value
+							end
+						end
+					end
+				end
+			end
+		end
+	end
+	-- Captures are optional, so a side can reject every capture whose
+	-- evaluated value is negative.
+	return max(highest_value or 0, 0)
+end
+
+function cpu_player.evaluate_board_state(board, next_player)
+	local capture_value = highest_evaluated_capture_value(
+		board,
+		next_player
+	)
+	if next_player == cpu then
+		return capture_value
+	end
+	return -capture_value
+end
+
 function cpu_player.opponent_can_capture_moved_piece(
 	board,
 	turn,
@@ -285,84 +551,4 @@ function cpu_player.opponent_can_capture_piece(
 		end
 	end
 	return false
-end
-
-local function choose_random_move(moves)
-	local index = flr(rnd(#moves)) + 1
-	return moves[index]
-end
-
-function cpu_player.choose_move(valid_moves, cpu_score, opponent_score)
-	if #valid_moves == 0 then
-		return nil
-	end
-
-	local minimum_capture_value = cpu_score < opponent_score and 1 or 0
-	local highest_capture_value = nil
-	local best_captures = {}
-	local non_captures = {}
-	local safe_non_captures = {}
-	local any_capture_available = false
-	for move in all(valid_moves) do
-		-- Emptying the CPU zone ends the game; a tied final score is won by
-		-- the player who made the final move.
-		local move_is_winning_capture = move.capture_value != nil and
-			cpu_score + move.capture_value >= opponent_score
-		local move_is_forbidden = opponent_score > cpu_score and
-			move.moves_last_piece_over_canal and
-			not move_is_winning_capture
-		if not move_is_forbidden then
-			if move.capture_value == nil then
-				non_captures[#non_captures + 1] = move
-				if not move.moved_piece_is_exposed then
-					safe_non_captures[#safe_non_captures + 1] = move
-				end
-			else
-				any_capture_available = true
-				if move.capture_value >= minimum_capture_value then
-					if highest_capture_value == nil or
-						move.capture_value > highest_capture_value then
-						highest_capture_value = move.capture_value
-						best_captures = {move}
-					elseif move.capture_value == highest_capture_value then
-						best_captures[#best_captures + 1] = move
-					end
-				end
-			end
-		end
-	end
-
-	if #best_captures > 0 then
-		return choose_random_move(best_captures)
-	end
-	-- With no capture on the board, save the highest-value threatened
-	-- piece that has a safe escape, preferring to cross the canal.
-	if not any_capture_available then
-		for piece_value = queen, pawn, -1 do
-			local canal_escapes = {}
-			local escapes = {}
-			for move in all(safe_non_captures) do
-				if move.source_piece_is_exposed and
-					move.source_piece_value == piece_value then
-					escapes[#escapes + 1] = move
-					if move.crosses_canal then
-						canal_escapes[#canal_escapes + 1] = move
-					end
-				end
-			end
-			if #canal_escapes > 0 then
-				return choose_random_move(canal_escapes)
-			end
-			if #escapes > 0 then
-				return choose_random_move(escapes)
-			end
-		end
-	end
-	if #safe_non_captures > 0 then
-		return choose_random_move(safe_non_captures)
-	end
-	if #non_captures > 0 then
-		return choose_random_move(non_captures)
-	end
-	return nil
 end
