@@ -1,11 +1,11 @@
 -- martian chess
 -- by Conor O'Kane
 
-include("src/cpu_player.lua")
-include("src/effects.lua")
-include("src/move_log.lua")
-include("src/ui.lua")
-include("src/leaderboard.lua")
+include ("src/cpu_player.lua")
+include ("src/effects.lua")
+include ("src/leaderboard.lua")
+include ("src/move_log.lua")
+include ("src/ui.lua")
 
 local board_columns = 4
 local board_rows = 8
@@ -38,7 +38,6 @@ local valid_move_light_sprite = 13
 local dark_board_tile = 4
 
 local board_width = 0
-local board_tiles = nil
 local board_x = border_size
 local board_origin_y = border_size
 local canal_y = 0
@@ -135,10 +134,6 @@ local function initialize_board()
 end
 
 local function initialize_layout()
-	local map_layers = fetch("/ram/cart/map/0.map")
-	local board_layer = map_layers[1]
-
-	board_tiles = board_layer.bmp
 	board_width = board_columns * tile_width
 	canal_y = board_origin_y + zone_rows * tile_height
 	bottom_board_y = canal_y + canal_height
@@ -614,17 +609,28 @@ local function start_cpu_move()
 end
 
 local function draw_board()
-	-- Map 0 stores one 4x4 board half. Draw it on the 20-pixel grid
-	-- above and below the canal.
-	for row = 0, zone_rows - 1 do
-		for column = 0, board_columns - 1 do
-			local tile = board_tiles:get(column, row)
-			local x = board_x + column * tile_width
-			spr(tile, x, board_origin_y + row * tile_height)
-			spr(tile, x, bottom_board_y + row * tile_height)
-		end
-	end
-
+	map(
+		0,
+		0,
+		board_x,
+		board_origin_y,
+		board_columns,
+		zone_rows,
+		nil,
+		tile_width,
+		tile_height
+	)
+	map(
+		0,
+		0,
+		board_x,
+		bottom_board_y,
+		board_columns,
+		zone_rows,
+		nil,
+		tile_width,
+		tile_height
+	)
 	rectfill(
 		board_x,
 		canal_y,
@@ -640,7 +646,7 @@ local function draw_selected_piece_background()
 	end
 
 	local map_row = selected_row % zone_rows
-	local tile = board_tiles:get(selected_column, map_row)
+	local tile = mget(selected_column, map_row)
 	local sprite = tile == dark_board_tile and
 		selected_dark_sprite or selected_light_sprite
 	spr(
@@ -657,7 +663,7 @@ local function draw_previous_move_background()
 
 	local function draw_light_square(column, row)
 		local map_row = row % zone_rows
-		local tile = board_tiles:get(column, map_row)
+		local tile = mget(column, map_row)
 		local sprite = tile == dark_board_tile and
 			previous_move_dark_sprite or previous_move_light_sprite
 		spr(
@@ -704,7 +710,7 @@ end
 local function draw_valid_moves()
 	for move in all(valid_moves) do
 		local map_row = move.row % zone_rows
-		local tile = board_tiles:get(move.column, map_row)
+		local tile = mget(move.column, map_row)
 		local sprite = tile == dark_board_tile and
 			valid_move_dark_sprite or valid_move_light_sprite
 		spr(

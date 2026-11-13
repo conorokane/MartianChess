@@ -76,7 +76,6 @@ function leaderboard.submit_player_victory(game)
 end
 
 function init_leaderboard()
-	scoresub("martian_chess_highscores", 5)
 	highscores = {}
 	current_page = 1
 end
