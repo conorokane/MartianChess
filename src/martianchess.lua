@@ -4,13 +4,13 @@
 include("src/cpu_player.lua")
 include("src/effects.lua")
 include("src/move_log.lua")
+include("src/ui.lua")
+include("src/leaderboard.lua")
 
 local board_columns = 4
 local board_rows = 8
 local zone_rows = 4
 local border_size = 4
-local side_panel_width = 102
-local panel_offset_x = 2
 local canal_height = 4
 local canal_color = 1
 local tile_width = 20
@@ -24,16 +24,6 @@ local cpu_move_delay_frames = 60
 local deadlock_start_after_move = 40
 local deadlock_move_limit = 7
 local deadlock_warning_start = 3
-local capture_group_spacing = 30
-local capture_count_offset_x = piece_width + 2
-local capture_count_offset_y = 5
-local score_panel_height = 34
-local score_panel_padding = 4
-local score_text_offset_x = 2
-local score_panel_radius = 4
-local score_panel_fill_color = 2
-local score_panel_border_color = 25
-local turn_highlight_color = 10
 
 local pawn = 1
 local drone = 2
@@ -55,14 +45,6 @@ local canal_y = 0
 local bottom_board_y = 0
 local window_width = 0
 local window_height = 0
-local game_over_panel_x = 0
-local game_over_panel_y = 0
-local game_over_panel_width = 0
-local game_over_panel_height = 0
-local restart_button_x = 1
-local restart_button_y = 0
-local restart_button_width = 42
-local restart_button_height = 14
 local restart_hovered = false
 local hover_column = nil
 local hover_row = nil
@@ -123,6 +105,7 @@ local function initialize_board()
 	hover_column = nil
 	hover_row = nil
 	restart_hovered = false
+	ui.clear_announcement()
 	for row = 1, board_rows do
 		game.board[row] = {}
 	end
@@ -159,21 +142,20 @@ local function initialize_layout()
 	board_width = board_columns * tile_width
 	canal_y = board_origin_y + zone_rows * tile_height
 	bottom_board_y = canal_y + canal_height
-	window_width = border_size + board_width + border_size + side_panel_width
+	window_width = border_size + board_width + border_size +
+		ui.side_panel_width
 	window_height = border_size + board_rows * tile_height + canal_height + border_size
-	game_over_panel_x = board_x + board_width + border_size / 2 +
-		panel_offset_x
-	game_over_panel_width = window_width - game_over_panel_x - border_size
-	game_over_panel_height = zone_rows * tile_height / 2
-	local north_panel_bottom = board_origin_y + score_panel_height
 	local board_bottom_y = bottom_board_y + zone_rows * tile_height
-	local south_panel_y = board_bottom_y - score_panel_height
-	game_over_panel_y = north_panel_bottom +
-		(south_panel_y - north_panel_bottom - game_over_panel_height) / 2
-	restart_button_x = game_over_panel_x +
-		(game_over_panel_width - restart_button_width) / 2
-	restart_button_y = game_over_panel_y + game_over_panel_height -
-		restart_button_height - 4
+	ui.initialize_layout({
+		board_x = board_x,
+		board_width = board_width,
+		border_size = border_size,
+		board_origin_y = board_origin_y,
+		board_bottom_y = board_bottom_y,
+		window_width = window_width,
+		deadlock_warning_start = deadlock_warning_start,
+		deadlock_move_limit = deadlock_move_limit
+	})
 	effects.initialize_canal_sparkles(
 		board_x,
 		canal_y,
@@ -375,7 +357,18 @@ local function end_deadlock()
 	end
 end
 
+local function resign_player()
+	game.over = true
+	game.winner = cpu
+	game.empty_player = nil
+	move_animation = nil
+	cpu_move_delay_elapsed = 0
+	clear_selection()
+	move_log.append("player resigned")
+end
+
 local function finish_move()
+	ui.clear_announcement()
 	local move = move_animation.move
 	local piece = move_animation.piece
 	local moved_piece_type = piece.type
@@ -471,6 +464,9 @@ local function finish_move()
 			winner = game_ended and (game.winner or "draw") or nil
 		}
 	)
+	if game_ended then
+		leaderboard.submit_player_victory(game)
+	end
 end
 
 local function begin_move(move)
@@ -719,192 +715,8 @@ local function draw_valid_moves()
 	end
 end
 
-local function draw_capture_list(captures, x, y)
-	local capture_counts = {0, 0, 0}
-	for piece_type in all(captures) do
-		capture_counts[piece_type] += 1
-	end
-	for piece_type = pawn, queen do
-		local group_x = x + (piece_type - 1) * capture_group_spacing
-		spr(
-			piece_type,
-			group_x,
-			y
-		)
-		print(
-			capture_counts[piece_type],
-			group_x + capture_count_offset_x,
-			y + capture_count_offset_y,
-			7
-		)
-	end
-end
-
-local function draw_captured_pieces()
-	local panel_x = board_x + board_width + border_size / 2 +
-		panel_offset_x
-	local panel_width = window_width - panel_x - border_size
-	local north_panel_y = board_origin_y
-	local board_bottom_y = bottom_board_y + zone_rows * tile_height
-	local south_panel_y = board_bottom_y - score_panel_height
-
-	local function draw_score_panel(y, owner)
-		rrectfill(
-			panel_x,
-			y,
-			panel_width,
-			score_panel_height,
-			score_panel_radius,
-			score_panel_fill_color
-		)
-		rrect(
-			panel_x,
-			y,
-			panel_width,
-			score_panel_height,
-			score_panel_radius,
-			game.turn == owner and turn_highlight_color or
-				score_panel_border_color
-		)
-	end
-
-	draw_score_panel(north_panel_y, cpu)
-	draw_score_panel(south_panel_y, player)
-	if not game.over then
-		local turn_text = game.turn == cpu and "CPU's turn" or
-			"Player's turn"
-		local turn_text_width = print(turn_text, 0, -1000)
-		local turn_text_y = game.turn == cpu and
-			north_panel_y + score_panel_height + 2 or
-			south_panel_y - 9
-		print(
-			turn_text,
-			panel_x + (panel_width - turn_text_width) / 2,
-			turn_text_y,
-			7
-		)
-	end
-
-	local content_x = panel_x + score_panel_padding
-	local north_label_y = north_panel_y + score_panel_padding
-	local south_label_y = south_panel_y + score_panel_padding
-	print(
-		"CPU score: "..game.cpu_score,
-		content_x + score_text_offset_x,
-		north_label_y,
-		7
-	)
-	draw_capture_list(
-		game.cpu_captures,
-		content_x,
-		north_label_y + 8
-	)
-	print(
-		"Player score: "..game.player_score,
-		content_x + score_text_offset_x,
-		south_label_y,
-		7
-	)
-	draw_capture_list(
-		game.player_captures,
-		content_x,
-		south_label_y + 8
-	)
-end
-
-local function draw_deadlock_countdown()
-	if game.over or
-		game.non_capture_move_count < deadlock_warning_start then
-		return
-	end
-
-	local moves_remaining =
-		deadlock_move_limit - game.non_capture_move_count
-	local x = board_x + board_width + border_size
-	print(
-		"Game ends in "..moves_remaining,
-		x,
-		canal_y - 11,
-		7
-	)
-	print(
-		moves_remaining == 1 and "move without" or "moves without",
-		x,
-		canal_y - 3,
-		7
-	)
-	print(
-		"a capture",
-		x,
-		canal_y + 5,
-		7
-	)
-end
-
-local function is_over_restart_button(x, y)
-	return x >= restart_button_x and
-		x < restart_button_x + restart_button_width and
-		y >= restart_button_y and
-		y < restart_button_y + restart_button_height
-end
-
-local function draw_game_over_panel()
-	if not game.over then
-		return
-	end
-
-	rrectfill(
-		game_over_panel_x,
-		game_over_panel_y,
-		game_over_panel_width,
-		game_over_panel_height,
-		4,
-		1
-	)
-	rrect(
-		game_over_panel_x,
-		game_over_panel_y,
-		game_over_panel_width,
-		game_over_panel_height,
-		4,
-		7
-	)
-	local winner_text = "Draw"
-	if game.winner then
-		local winner_name = game.winner == cpu and "CPU" or "Player"
-		winner_text = winner_name.. " wins!"
-	end
-	local winner_text_width = print(winner_text, 0, -1000)
-	print(
-		winner_text,
-		game_over_panel_x + (game_over_panel_width - winner_text_width) / 2,
-		game_over_panel_y + 5,
-		7
-	)
-	rrectfill(
-		restart_button_x,
-		restart_button_y,
-		restart_button_width,
-		restart_button_height,
-		4,
-		restart_hovered and 25 or 5
-	)
-	rrect(
-		restart_button_x,
-		restart_button_y,
-		restart_button_width,
-		restart_button_height,
-		4,
-		7
-	)
-	local restart_text = "Restart"
-	local restart_text_width = print(restart_text, 0, -1000)
-	print(
-		restart_text,
-		restart_button_x + (restart_button_width - restart_text_width) / 2 + 1,
-		restart_button_y + 3,
-		7
-	)
+local function draw_game_ui()
+	ui.draw_game_ui(game)
 end
 
 local function hovered_tile_is_visible()
@@ -919,7 +731,6 @@ local function hovered_tile_is_visible()
 end
 
 local function update_hovered_tile()
-	local mouse_x, mouse_y = mouse()
 	local previous_hover_column = hover_column
 	local previous_hover_row = hover_row
 	hover_column = nil
@@ -959,6 +770,7 @@ local function draw_hovered_tile()
 end
 
 function _init()
+	mouse_x, mouse_y, mouse_buttons = mouse()
 	initialize_layout()
 	window{
 		width = window_width,
@@ -967,23 +779,53 @@ function _init()
 		title = "Martian Chess"
 	}
 	initialize_board()
+	_update = update_game
+	_draw = draw_game
 end
 
-function _update()
-	local mouse_x, mouse_y, mouse_buttons = mouse()
-	local left_click = type(mouse_buttons) == "number" and mouse_buttons % 2 == 1
+function update_game()
+	mouse_x, mouse_y, mouse_buttons = mouse()
+	local left_click = mouse_buttons == 0x1
 	effects.update_canal_sparkles()
-	if move_animation then
-		update_move_animation()
+	if left_click and not previous_left_click then
+		local action_button, announcement =
+			ui.action_button_at(mouse_x, mouse_y)
+		if action_button == "game_log" then
+			ui.play_button_click()
+			move_log.copy_to_clipboard()
+			ui.set_announcement(announcement)
+			previous_left_click = left_click
+			return
+		elseif action_button == "resign" and not game.over then
+			ui.play_button_click()
+			ui.set_announcement(announcement)
+			resign_player()
+			previous_left_click = left_click
+			return
+		elseif action_button == "instructions" and not game.over then
+			ui.play_button_click()
+			set_clipboard("https://www.looneylabs.com/lit/rules/martian-chess-rules")
+			ui.set_announcement(announcement)
+			previous_left_click = left_click
+			return
+		elseif action_button == "leaderboards" and not game.over then
+			ui.play_button_click()
+			leaderboard.open(update_game, draw_game)
+			previous_left_click = left_click
+			return
+		end
+	end
+	if game.over then
+		restart_hovered = ui.is_over_restart_button(mouse_x, mouse_y)
+		if restart_hovered and left_click and not previous_left_click then
+			ui.play_button_click()
+			initialize_board()
+		end
 		previous_left_click = left_click
 		return
 	end
-	if game.over then
-		restart_hovered = is_over_restart_button(mouse_x, mouse_y)
-		if restart_hovered and left_click and not previous_left_click then
-			sfx(0)
-			initialize_board()
-		end
+	if move_animation then
+		update_move_animation()
 		previous_left_click = left_click
 		return
 	end
@@ -1007,7 +849,7 @@ function _update()
 	previous_left_click = left_click
 end
 
-function _draw()
+function draw_game()
 	cls(21)
 	draw_board()
 	effects.draw_canal_sparkles()
@@ -1017,7 +859,5 @@ function _draw()
 	draw_hovered_tile()
 	draw_pieces()
 	draw_move_animation()
-	draw_captured_pieces()
-	draw_deadlock_countdown()
-	draw_game_over_panel()
+	draw_game_ui()
 end

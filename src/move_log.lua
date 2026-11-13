@@ -60,6 +60,13 @@ function move_log.record(
 	if options.winner then
 		log_text ..= "\nwinner: "..options.winner
 	end
+end
+
+function move_log.append(entry)
+	log_text ..= "\n"..entry
+end
+
+function move_log.copy_to_clipboard()
 	set_clipboard(log_text)
 end
 
